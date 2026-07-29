@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Generator, List
 
+import httpx
 import requests
 from openai import OpenAI
 
@@ -33,8 +34,11 @@ class KimiClient:
             )
 
         self.model = model
-        self.api_base = "https://api.moonshot.ai/v1"
-        self.client = OpenAI(api_key=self.api_key, base_url=self.api_base)
+        self.api_base = "https://api.moonshot.cn/v1"
+
+        # 绕过代理，直接连接API
+        http_client = httpx.Client(trust_env=False)
+        self.client = OpenAI(api_key=self.api_key, base_url=self.api_base, http_client=http_client)
 
     # ============================================================
     # 图片识别功能
@@ -197,7 +201,7 @@ class KimiClient:
         url = urls[0]
         print(f"正在下载生成的图片...")
 
-        resp = requests.get(url, stream=True, timeout=120)
+        resp = requests.get(url, stream=True, timeout=120, proxies={})
         resp.raise_for_status()
 
         with open(output_path, "wb") as f:
@@ -360,7 +364,7 @@ class KimiClient:
 
         print(f"正在下载生成的视频...")
 
-        resp = requests.get(url, stream=True, timeout=300)
+        resp = requests.get(url, stream=True, timeout=300, proxies={})
         resp.raise_for_status()
 
         total = int(resp.headers.get("content-length", 0))
@@ -420,7 +424,7 @@ class KimiClient:
     def _download_image(self, url: str) -> tuple[str, str]:
         """从URL下载图片"""
         print(f"正在下载图片: {url}")
-        resp = requests.get(url, timeout=120)
+        resp = requests.get(url, timeout=120, proxies={})
         resp.raise_for_status()
 
         content_type = resp.headers.get("content-type", "image/png")
@@ -466,7 +470,7 @@ class KimiClient:
     def _download_video(self, url: str) -> str:
         """从URL下载视频"""
         print(f"正在下载视频: {url}")
-        resp = requests.get(url, stream=True, timeout=300)
+        resp = requests.get(url, stream=True, timeout=300, proxies={})
         resp.raise_for_status()
 
         total = int(resp.headers.get("content-length", 0))
