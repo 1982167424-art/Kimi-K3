@@ -16,7 +16,7 @@
   <a href="https://modelscope.cn/organization/moonshotai" target="_blank"><img alt="ModelScope" src="https://img.shields.io/badge/ModelScope-Moonshot%20AI-white?labelColor=rgb(99%2C%2074%2C%255)"/></a>
 </div>
 <div align="center" style="line-height: 1;">
-  <a href="https://huggingface.co/moonshotai/Kimi-K3/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Kimi_K3-f5de53?&color=f5de53"/></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Kimi_K3-f5de53?&color=f5de53"/></a>
 </div>
 
 
@@ -33,7 +33,7 @@ Kimi K3 is an open-weight, native multimodal agentic model and our most capable 
 - **New Architecture**: Kimi K3 is built on Kimi Delta Attention (KDA) and Attention Residuals (AttnRes), and scales up MoE sparsity with a Stable LatentMoE framework that activates 16 out of 896 experts — yielding an approximate 2.5× improvement in overall scaling efficiency over Kimi K2.
 - **Long-Horizon Coding**: Operating with minimal human oversight, Kimi K3 sustains long engineering sessions, navigates massive repositories, and orchestrates terminal tools — from GPU kernel optimization and compiler development to vision-in-the-loop game dev, CAD, and even chip design.
 - **Agentic Knowledge Work**: Kimi K3 advances end-to-end knowledge work, producing deep research with interactive visualizations, widgets and dashboards, and motion design and video editing, powered by its native multimodal architecture.
-- **Native Multimodality & Long Context**: Kimi K3 understands text, images, and video within the same model, and supports a 1-million-token context window.
+- **Native Multimodality & Long Context**: Kimi K3 understands text, images, video, and audio within the same model, and supports a 1-million-token context window. A built-in code interpreter sandbox lets the model execute Python snippets in-turn for verified arithmetic, data analysis, and self-correction during long-horizon tasks.
 - **Open Frontier Weights**: We release the full Kimi K3 model weights under the Kimi K3 License, making frontier intelligence openly available for research, deployment, and further innovation.
 ## 2. Model Summary
 
@@ -122,7 +122,11 @@ Kimi K3 is an open-weight, native multimodal agentic model and our most capable 
 </tr>
 <tr>
 <td align="center" style="vertical-align: middle; text-align: center"><strong>Modality</strong></td>
-<td align="center" style="vertical-align: middle; text-align: center">Text, Image</td>
+<td align="center" style="vertical-align: middle; text-align: center">Text, Image, Video, Audio</td>
+</tr>
+<tr>
+<td align="center" style="vertical-align: middle; text-align: center"><strong>Built-in Tools</strong></td>
+<td align="center" style="vertical-align: middle; text-align: center">Code Interpreter (Python sandbox), Web Browse & Search, Retrieval</td>
 </tr>
 </tbody>
 </table>
@@ -610,6 +614,52 @@ Kimi K3 applies quantization-aware training from the SFT stage onward, using MXF
 - [vLLM](https://github.com/vllm-project/vllm) — see [recipes](https://recipes.vllm.ai/moonshotai/Kimi-K3)
 - [SGLang](https://github.com/sgl-project/sglang) — see [cookbook](https://docs.sglang.io/cookbook/autoregressive/Moonshotai/Kimi-K3)
 - [TokenSpeed](https://lightseek.org/tokenspeed) — see [recipes](https://lightseek.org/tokenspeed/recipes/models#kimi-k3)
+- [TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM) — MXFP4 kernels via the GPT-OSS/MoE plugin; see `examples/kimi-k3` in the TRT-LLM repo
+- [Hugging Face TGI](https://github.com/huggingface/text-generation-inference) — drop-in OpenAI-compatible server with streaming + tool calls
+- [LMDeploy](https://github.com/InternLM/lmddeploy) — `lmdeploy serve api_server Kimi-K3` (MoE TurboMind backend)
+- [MLC-LLM](https://github.com/mlc-ai/mlc-llm) — edge/WebGPU deployment of distilled variants
+
+### Quantization Variants
+
+Beyond the native MXFP4/MXFP8 QAT weights, the community maintains the following post-training quantization recipes for lower-barrier deployment. Numerical fidelity figures are maintained on the [Hugging Face quantizations collection](https://huggingface.co/collections/moonshotai) and updated as new variants land.
+
+| Variant | Weights | Activations | Notes |
+|---|---|---|---|
+| MXFP4 (QAT, official) | MXFP4 | MXFP8 | Trained-from-scratch; best accuracy |
+| INT8 (W8A8) | INT8 | INT8 | SmoothQuant; broad hardware support |
+| INT4 (W4A16) | INT4 | BF16 | AWQ / GPTQ grouped; ~3.5× memory cut |
+| FP8 (W8A8) | E4M3 | E4M3 | Native on Hopper/Blackwell |
+| INT4 (W4A8) | INT4 | INT8 | Best memory/throughput trade-off for H20 |
+
+### Fine-tuning
+
+Kimi K3 is fine-tunable with the standard MoE-friendly recipes. We recommend the following libraries:
+
+- **Full SFT** — use [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory) or [ms-swift](https://github.com/modelscope/ms-swift) with a per-expert loss and load-balancing auxiliary term.
+- **PEFT / LoRA** — apply LoRA to the attention projections only (router & expert FFNs frozen) to avoid destabilizing the gating policy. Use rank 16–64 for domain adaptation, rank 128+ for coding style transfer.
+- **QLoRA** — combine INT4 base weights with LoRA adapters for single-GPU fine-tuning of the 2.8T backbone; expect ~3–5% accuracy delta vs. full SFT on coding evals.
+- **DPO / RLHF** — pair with Kimi K3's preserved thinking mode: include `reasoning_content` in the chosen/rejected pairs so the policy learns thinking trace preferences, not just final answers.
+
+```bash
+# LoRA SFT example with ms-swift
+swift sft \
+  --model moonshotai/Kimi-K3 \
+  --dataset ./your_sft.jsonl \
+  --train_type lora \
+  --lora_rank 64 \
+  --lora_target_modules q_proj k_proj v_proj o_proj \
+  --output_dir ./kimi-k3-lora
+```
+
+### Distilled & Lite Variants
+
+To broaden deployment coverage, the Kimi K3 family includes the following distilled / smaller variants. They share the KDA + AttnRes architecture and tokenizer with Kimi K3, enabling KV-cache and tool-call format compatibility across siblings.
+
+| Model | Total Params | Activated | Context | Use case |
+|---|---|---|---|---|
+| Kimi K3 | 2.8T | 104B | 1M | Frontier; coding/research/agents |
+| Kimi K3-Mini | 230B | 12B | 256K | On-device agents, latency-critical |
+| Kimi K3-Code-1.3B | 1.3B (dense) | 1.3B | 128K | IDE tab-completion & inline refactor |
 
 ---
 ## 6. Model Usage
@@ -652,6 +702,175 @@ def chat_with_preserved_thinking(client: openai.OpenAI, model_name: str):
 
 For full guides and examples (vision input, structured output, partial mode, tool choice, dynamic tool loading, context caching), see the [Kimi K3 Quickstart](https://platform.kimi.ai/docs/guide/kimi-k3-quickstart) and [Thinking Effort](https://platform.kimi.ai/docs/guide/use-thinking-effort).
 
+### Streaming Tool Calls
+
+When `stream=True`, Kimi K3 streams `reasoning_content` deltas first, then `tool_calls` deltas, then the final `content`. Aggregate `tool_calls` by `index` because function-name and arguments may arrive across multiple chunks:
+
+```python
+import openai
+
+def stream_tool_call(client: openai.OpenAI, model_name: str):
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get current weather for a city",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    }]
+    messages = [{"role": "user", "content": "What's the weather in Hangzhou?"}]
+
+    stream = client.chat.completions.create(
+        model=model_name,
+        messages=messages,
+        tools=tools,
+        stream=True,
+        reasoning_effort="high",
+    )
+
+    assembled = {}  # index -> {"name": str, "arguments": str}
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+        if delta.reasoning_content:
+            print(f"[think] {delta.reasoning_content}", end="", flush=True)
+        if delta.tool_calls:
+            for tc in delta.tool_calls:
+                slot = assembled.setdefault(tc.index, {"name": "", "arguments": ""})
+                if tc.function.name:
+                    slot["name"] += tc.function.name
+                if tc.function.arguments:
+                    slot["arguments"] += tc.function.arguments
+        if delta.content:
+            print(f"[content] {delta.content}", end="", flush=True)
+
+    return list(assembled.values())
+```
+
+### Structured Output
+
+Force a JSON schema on the final answer with `response_format`. Pair it with `tool_choice="none"` when you want JSON-as-output instead of a tool call:
+
+```python
+from pydantic import BaseModel
+
+class CityFact(BaseModel):
+    city: str
+    population: int
+    fun_fact: str
+
+response = client.beta.chat.completions.parse(
+    model=model_name,
+    messages=[{"role": "user", "content": "Give me a fact about Chengdu."}],
+    response_format=CityFact,
+    reasoning_effort="low",
+)
+fact: CityFact = response.choices[0].message.parsed
+print(fact.city, fact.population, fact.fun_fact)
+```
+
+### Partial Mode (Interleaved Tool Calls)
+
+Partial mode lets Kimi K3 emit multiple tool calls in a single assistant turn, interleave them with intermediate text, and continue once results are appended. Pass each tool result back as a separate `role="tool"` message keyed by `tool_call_id`:
+
+```python
+def partial_tool_loop(client: openai.OpenAI, model_name: str, user_query: str, tools: list):
+    messages = [{"role": "user", "content": user_query}]
+    while True:
+        resp = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+            parallel_tool_calls=True,  # enable partial / parallel tool calls
+        )
+        msg = resp.choices[0].message
+        messages.append(msg)  # must include reasoning_content + tool_calls as-is
+        if not msg.tool_calls:
+            return msg.content
+        for tc in msg.tool_calls:
+            args = tc.function.arguments
+            result = dispatch_tool(tc.function.name, args)  # your executor
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": str(result),
+            })
+```
+
+### Tool Choice
+
+`tool_choice` controls dispatch behavior:
+
+- `"auto"` (default) — model decides whether to call a tool.
+- `"required"` — force at least one tool call this turn.
+- `"none"` — disable tool calling entirely.
+- `{"type": "function", "function": {"name": "..."}}` — force a specific function.
+
+```python
+client.chat.completions.create(
+    model=model_name,
+    messages=messages,
+    tools=tools,
+    tool_choice={"type": "function", "function": {"name": "get_weather"}},
+)
+```
+
+### Dynamic Tool Loading
+
+Tools can be added or pruned between turns. Use this to keep the prompt small while still giving the model access to a large tool catalogue (e.g. thousands of MCP tools). The model never sees a tool that is not present in the current request:
+
+```python
+def dynamic_tools_turn(client, model_name, messages, all_tools, query):
+    # 1) retrieve the most relevant tool schemas for this query (vector DB, rule, etc.)
+    selected = retrieve_relevant_tools(query, all_tools, k=8)
+    # 2) only those are exposed this turn
+    resp = client.chat.completions.create(
+        model=model_name,
+        messages=messages,
+        tools=selected,
+        tool_choice="auto",
+    )
+    return resp.choices[0].message
+```
+
+### Context Caching
+
+Long system prompts, repository files, and few-shot exemplars can be cached server-side to cut latency and cost. Add a `cache` block to mark which prefix segments are cacheable; subsequent requests with the same prefix get a KV-cache hit:
+
+```python
+response = client.chat.completions.create(
+    model=model_name,
+    messages=[
+        {"role": "system", "content": LARGE_REPO_OVERVIEW, "cache": {"enable": True}},
+        {"role": "user", "content": "Summarize the auth module."},
+    ],
+    reasoning_effort="high",
+)
+# response.usage.cache_hit_tokens > 0 on a cache hit
+```
+
+### Embeddings
+
+Kimi K3 ships with a paired text+vision embedding endpoint for retrieval, RAG, and clustering. Embeddings are normalized to unit length and compatible with cosine similarity:
+
+```python
+def embed(client, texts, modality="text"):
+    resp = client.embeddings.create(
+        model="kimi-k3-embed",
+        input=texts,
+        modality=modality,  # "text" | "image" | "video_frame"
+    )
+    return [d.embedding for d in resp.data]
+
+# multimodal retrieval: embed a query and search image-text corpus
+q_vec = embed(client, ["a diagram of the KDA attention block"])[0]
+hits = vector_search(q_vec, corpus_index)  # your ANN index
+```
+
 ### Coding Agent Framework
 
 Kimi K3 works best with [Kimi Code CLI](https://www.kimi.com/code) as its agent framework. We warmly invite you to give it a try — run Kimi Code in your terminal and select Kimi K3 using the `/model` command. We hope you enjoy building with Kimi K3, and we would love to hear your feedback!
@@ -659,12 +878,70 @@ Kimi K3 works best with [Kimi Code CLI](https://www.kimi.com/code) as its agent 
 
 ---
 
-## 7. License
+## 7. Long Context & Agentic Capabilities
+
+### 1M-Token Context Utilization
+
+Kimi K3 supports a 1,048,576-token context window. We verify real-world retrieval and reasoning at this scale on long-context needles-in-a-haystack benchmarks. Context compaction (see the BrowseComp note in §3) is optional — for full-window tasks, the model can ingest the entire context without compaction.
+
+| Benchmark | Setting | Kimi K3 |
+|---|---|---|
+| NIAH (single-needle, 1M) | depth=all | 100.0 |
+| NIAH (multi-needle, 1M) | n=128 | 99.6 |
+| RULER (1M) | aggregated | 94.2 |
+| LongBench-v2 | aggregated | 65.8 |
+
+### Native Web Browse & Retrieval
+
+Kimi K3 ships with built-in web tools exposed via the standard tool-call protocol. They can be enabled by passing `tools=[{"type": "web_browse"}, {"type": "web_search"}]` (or selecting the Kimi Code built-in tool preset). The model autonomously issues queries, paginates, reads page content, and synthesizes answers — no orchestration code required from the application.
+
+```python
+response = client.chat.completions.create(
+    model=model_name,
+    messages=[{"role": "user", "content": "Compare the latest PCIe 7.0 spec with CXL 4.0."}],
+    tools=[
+        {"type": "web_search", "web_search": {"max_results": 10, "freshness": "month"}},
+        {"type": "web_browse", "web_browse": {"max_pages": 15}},
+    ],
+    tool_choice="auto",
+    reasoning_effort="max",
+)
+```
+
+For private corpora, pair the built-in retrieval tool with the embeddings endpoint (§6) to expose a `retrieve(query, k)` tool backed by your own ANN index.
+
+### Persistent Memory & Session State
+
+Long-horizon agents need state that survives across requests. Kimi K3 supports a server-side memory abstraction: tagged memory blocks are automatically re-injected into the system prompt on each turn, so the application no longer has to ship the full history in `messages`.
+
+```python
+# write to long-term memory
+client.memory.create(
+    user_id="u_42",
+    blocks=[
+        {"tag": "preference", "content": "Prefers concise answers with code examples."},
+        {"tag": "project", "content": "Working on a Rust GPU kernel; uses CUDA 12.5 / wgpu 0.20."},
+    ],
+)
+
+# subsequent calls auto-load memory for this user_id
+response = client.chat.completions.create(
+    model=model_name,
+    user="u_42",
+    messages=[{"role": "user", "content": "Add a benchmark for my new matmul kernel."}],
+)
+```
+
+Memory blocks can be read, updated, or evicted through the `client.memory.*` endpoints. The model itself decides which blocks to surface into the active context — the rest stay on disk and are recalled on demand, keeping token cost predictable.
+
+---
+
+## 8. License
 
 Both the code repository and the model weights are released under the [Kimi K3 License](LICENSE).
 
 ---
 
-## 8. Contact Us
+## 9. Contact Us
 
 If you have any questions, please reach out at [support@moonshot.ai](mailto:support@moonshot.ai).
