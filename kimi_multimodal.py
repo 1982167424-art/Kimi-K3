@@ -1,0 +1,522 @@
+"""
+Kimi K3 多模态AI模块
+提供图片识别、图片生成、视频理解、视频生成功能。
+"""
+
+import base64
+import os
+import tempfile
+from pathlib import Path
+from typing import Optional, Generator, List
+
+import requests
+from openai import OpenAI
+
+
+class KimiClient:
+    """Kimi K3 多模态AI客户端"""
+
+    def __init__(self, api_key: Optional[str] = None, model: str = "kimi-k3"):
+        """
+        初始化Kimi客户端
+
+        Args:
+            api_key: Kimi API密钥，如果未提供则从环境变量 KIMI_API_KEY 读取
+            model: 模型名称，默认为 kimi-k3
+        """
+        self.api_key = api_key or os.environ.get("KIMI_API_KEY")
+        if not self.api_key:
+            raise ValueError(
+                "请提供API密钥或设置环境变量 KIMI_API_KEY\n"
+                "  export KIMI_API_KEY=\"your_api_key\"\n"
+                "  API key 从 https://platform.kimi.ai 获取"
+            )
+
+        self.model = model
+        self.api_base = "https://api.moonshot.ai/v1"
+        self.client = OpenAI(api_key=self.api_key, base_url=self.api_base)
+
+    # ============================================================
+    # 图片识别功能
+    # ============================================================
+
+    def analyze_image(
+        self,
+        image_source: str,
+        prompt: str = "请详细描述这张图片的内容。",
+        stream: bool = False,
+        reasoning_effort: str = "high"
+    ) -> Generator[str, None, None] | str:
+        """
+        分析图片内容
+
+        Args:
+            image_source: 图片源，支持以下格式：
+                - 本地文件路径: "./image.png"
+                - HTTP/HTTPS URL: "https://example.com/image.png"
+                - Base64编码: "base64:..."
+            prompt: 分析提示词
+            stream: 是否使用流式输出
+            reasoning_effort: 推理强度，可选 "low", "medium", "high"
+
+        Returns:
+            如果stream=True，返回生成器；否则返回完整响应字符串
+        """
+        image_b64, mime_type = self._load_image(image_source)
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{image_b64}"
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt
+                    }
+                ]
+            }
+        ]
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            stream=stream,
+            reasoning_effort=reasoning_effort,
+        )
+
+        if stream:
+            return self._process_stream(response)
+        else:
+            return response.choices[0].message.content
+
+    def describe_image(self, image_source: str) -> str:
+        """快速描述图片内容"""
+        return self.analyze_image(
+            image_source,
+            prompt="请用2-3句话简洁地描述这张图片的主要内容。",
+            stream=False
+        )
+
+    def identify_objects(self, image_source: str) -> str:
+        """识别图片中的物体"""
+        return self.analyze_image(
+            image_source,
+            prompt="请列出图片中所有可识别的物体，并简要描述它们的位置和特征。",
+            stream=False
+        )
+
+    def analyze_scene(self, image_source: str) -> str:
+        """分析图片场景"""
+        return self.analyze_image(
+            image_source,
+            prompt="请分析这张图片的场景，包括：环境、氛围、光线、色调、可能的时间和地点。",
+            stream=False
+        )
+
+    def extract_text_from_image(self, image_source: str) -> str:
+        """从图片中提取文字（OCR）"""
+        return self.analyze_image(
+            image_source,
+            prompt="请识别并提取图片中的所有文字内容，保持原始格式。",
+            stream=False
+        )
+
+    def answer_image_question(self, image_source: str, question: str) -> str:
+        """基于图片回答特定问题"""
+        return self.analyze_image(
+            image_source,
+            prompt=f"请观察图片后回答以下问题：{question}",
+            stream=False
+        )
+
+    # ============================================================
+    # 图片生成功能
+    # ============================================================
+
+    def generate_image(
+        self,
+        prompt: str,
+        size: str = "1024x1024",
+        n: int = 1,
+        style: Optional[str] = None
+    ) -> List[str]:
+        """
+        生成图片
+
+        Args:
+            prompt: 图片生成提示词
+            size: 图片尺寸，可选 "1024x1024", "1792x1024", "1024x1792"
+            n: 生成图片数量
+            style: 风格描述（可选）
+
+        Returns:
+            生成的图片URL列表
+        """
+        full_prompt = prompt
+        if style:
+            full_prompt = f"{prompt}, 风格: {style}"
+
+        response = self.client.images.generate(
+            model="kimi-k3-image",
+            prompt=full_prompt,
+            size=size,
+            n=n,
+        )
+
+        return [item.url for item in response.data]
+
+    def generate_and_save_image(
+        self,
+        prompt: str,
+        output_path: str,
+        size: str = "1024x1024",
+        style: Optional[str] = None
+    ) -> str:
+        """
+        生成图片并保存到本地
+
+        Args:
+            prompt: 图片生成提示词
+            output_path: 输出文件路径
+            size: 图片尺寸
+            style: 风格描述（可选）
+
+        Returns:
+            保存的文件路径
+        """
+        urls = self.generate_image(prompt, size=size, style=style)
+
+        if not urls:
+            raise RuntimeError("图片生成失败")
+
+        url = urls[0]
+        print(f"正在下载生成的图片...")
+
+        resp = requests.get(url, stream=True, timeout=120)
+        resp.raise_for_status()
+
+        with open(output_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        print(f"图片已保存: {output_path}")
+        return output_path
+
+    # ============================================================
+    # 视频理解功能
+    # ============================================================
+
+    def analyze_video(
+        self,
+        video_source: str,
+        prompt: str = "请仔细观看这个视频，详细描述视频中的内容：画面里有什么？发生了什么？",
+        stream: bool = True,
+        reasoning_effort: str = "high"
+    ) -> Generator[str, None, None] | str:
+        """
+        分析视频内容
+
+        Args:
+            video_source: 视频源，支持以下格式：
+                - 本地文件路径: "./video.mp4"
+                - HTTP/HTTPS URL: "https://example.com/video.mp4"
+                - Base64编码: "base64:..."
+            prompt: 分析提示词
+            stream: 是否使用流式输出
+            reasoning_effort: 推理强度，可选 "low", "medium", "high"
+
+        Returns:
+            如果stream=True，返回生成器；否则返回完整响应字符串
+        """
+        video_b64 = self._load_video(video_source)
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "video_url",
+                        "video_url": {
+                            "url": f"data:video/mp4;base64,{video_b64}"
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt
+                    }
+                ]
+            }
+        ]
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            stream=stream,
+            reasoning_effort=reasoning_effort,
+        )
+
+        if stream:
+            return self._process_stream(response)
+        else:
+            return response.choices[0].message.content
+
+    def describe_video(self, video_source: str) -> str:
+        """快速描述视频内容"""
+        return self.analyze_video(
+            video_source,
+            prompt="请用2-3句话简洁地描述这个视频的主要内容。",
+            stream=False
+        )
+
+    def analyze_timeline(self, video_source: str) -> str:
+        """分析视频时间线"""
+        return self.analyze_video(
+            video_source,
+            prompt="请按照时间顺序，详细描述视频中发生的事件，格式为：[时间点] 事件描述",
+            stream=False
+        )
+
+    def extract_key_frames(self, video_source: str) -> str:
+        """提取关键帧描述"""
+        return self.analyze_video(
+            video_source,
+            prompt="请识别视频中的关键画面/场景，描述每个关键画面的内容和出现的大致时间。",
+            stream=False
+        )
+
+    def analyze_emotion(self, video_source: str) -> str:
+        """分析视频情感/氛围"""
+        return self.analyze_video(
+            video_source,
+            prompt="请分析这个视频的情感氛围和情绪基调，包括画面色调、音乐、人物表情等方面。",
+            stream=False
+        )
+
+    def answer_video_question(self, video_source: str, question: str) -> str:
+        """基于视频回答特定问题"""
+        return self.analyze_video(
+            video_source,
+            prompt=f"请观看视频后回答以下问题：{question}",
+            stream=False
+        )
+
+    # ============================================================
+    # 视频生成功能
+    # ============================================================
+
+    def generate_video(
+        self,
+        prompt: str,
+        duration: int = 5,
+        size: str = "1280x720"
+    ) -> str:
+        """
+        生成视频
+
+        Args:
+            prompt: 视频生成提示词
+            duration: 视频时长（秒），默认5秒
+            size: 视频尺寸，默认 "1280x720"
+
+        Returns:
+            生成的视频URL
+        """
+        response = self.client.images.generate(
+            model="kimi-k3-video",
+            prompt=prompt,
+            size=size,
+            extra_body={"duration": duration}
+        )
+
+        if response.data:
+            return response.data[0].url
+        raise RuntimeError("视频生成失败")
+
+    def generate_and_save_video(
+        self,
+        prompt: str,
+        output_path: str,
+        duration: int = 5,
+        size: str = "1280x720"
+    ) -> str:
+        """
+        生成视频并保存到本地
+
+        Args:
+            prompt: 视频生成提示词
+            output_path: 输出文件路径
+            duration: 视频时长（秒）
+            size: 视频尺寸
+
+        Returns:
+            保存的文件路径
+        """
+        url = self.generate_video(prompt, duration=duration, size=size)
+
+        print(f"正在下载生成的视频...")
+
+        resp = requests.get(url, stream=True, timeout=300)
+        resp.raise_for_status()
+
+        total = int(resp.headers.get("content-length", 0))
+        downloaded = 0
+
+        with open(output_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total > 0:
+                    pct = downloaded * 100 // total
+                    print(f"\r  下载进度: {pct}% ({downloaded // 1024}KB / {total // 1024}KB)", end="", flush=True)
+
+        print(f"\n视频已保存: {output_path}")
+        return output_path
+
+    def image_to_video(self, image_source: str, prompt: str = "") -> str:
+        """
+        将图片转换为视频
+
+        Args:
+            image_source: 图片源
+            prompt: 视频生成提示词（可选）
+
+        Returns:
+            生成的视频URL
+        """
+        image_b64, _ = self._load_image(image_source)
+
+        full_prompt = f"将这张图片转换为动态视频。{prompt}" if prompt else "将这张图片转换为动态视频"
+
+        response = self.client.images.generate(
+            model="kimi-k3-video",
+            prompt=full_prompt,
+            image=f"data:image/png;base64,{image_b64}",
+            extra_body={"type": "image_to_video"}
+        )
+
+        if response.data:
+            return response.data[0].url
+        raise RuntimeError("图片转视频失败")
+
+    # ============================================================
+    # 工具方法
+    # ============================================================
+
+    def _load_image(self, image_source: str) -> tuple[str, str]:
+        """加载图片并转换为base64，返回(base64, mime_type)"""
+        if image_source.startswith("base64:"):
+            return image_source[7:], "image/png"
+
+        if image_source.startswith(("http://", "https://")):
+            return self._download_image(image_source)
+
+        return self._read_local_image(image_source)
+
+    def _download_image(self, url: str) -> tuple[str, str]:
+        """从URL下载图片"""
+        print(f"正在下载图片: {url}")
+        resp = requests.get(url, timeout=120)
+        resp.raise_for_status()
+
+        content_type = resp.headers.get("content-type", "image/png")
+        if ";" in content_type:
+            content_type = content_type.split(";")[0].strip()
+
+        image_b64 = base64.b64encode(resp.content).decode("utf-8")
+        print(f"  下载完成，大小: {len(resp.content) // 1024}KB")
+        return image_b64, content_type
+
+    def _read_local_image(self, file_path: str) -> tuple[str, str]:
+        """读取本地图片文件"""
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"图片文件不存在: {file_path}")
+
+        mime_types = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+        }
+        mime_type = mime_types.get(path.suffix.lower(), "image/png")
+
+        print(f"正在读取图片: {file_path}")
+        with open(path, "rb") as f:
+            image_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        print(f"  读取完成，大小: {len(image_b64) * 3 // 4 // 1024}KB")
+        return image_b64, mime_type
+
+    def _load_video(self, video_source: str) -> str:
+        """加载视频并转换为base64"""
+        if video_source.startswith("base64:"):
+            return video_source[7:]
+
+        if video_source.startswith(("http://", "https://")):
+            return self._download_video(video_source)
+
+        return self._read_local_file(video_source)
+
+    def _download_video(self, url: str) -> str:
+        """从URL下载视频"""
+        print(f"正在下载视频: {url}")
+        resp = requests.get(url, stream=True, timeout=300)
+        resp.raise_for_status()
+
+        total = int(resp.headers.get("content-length", 0))
+        downloaded = 0
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            for chunk in resp.iter_content(chunk_size=8192):
+                tmp.write(chunk)
+                downloaded += len(chunk)
+                if total > 0:
+                    pct = downloaded * 100 // total
+                    print(f"\r  下载进度: {pct}% ({downloaded // 1024}KB / {total // 1024}KB)", end="", flush=True)
+
+            tmp_path = tmp.name
+
+        print(f"\n  下载完成: {tmp_path}")
+
+        with open(tmp_path, "rb") as f:
+            video_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        os.unlink(tmp_path)
+        return video_b64
+
+    def _read_local_file(self, file_path: str) -> str:
+        """读取本地视频文件"""
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"视频文件不存在: {file_path}")
+
+        print(f"正在读取视频: {file_path}")
+        with open(path, "rb") as f:
+            video_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        print(f"  读取完成，大小: {len(video_b64) * 3 // 4 // 1024}KB")
+        return video_b64
+
+    def _process_stream(self, response) -> Generator[str, None, None]:
+        """处理流式响应"""
+        for chunk in response:
+            delta = chunk.choices[0].delta
+            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                yield delta.reasoning_content
+            if delta.content:
+                yield delta.content
+
+
+def create_client(api_key: Optional[str] = None, model: str = "kimi-k3") -> KimiClient:
+    """便捷函数：创建Kimi客户端"""
+    return KimiClient(api_key=api_key, model=model)
+
+
+# 保持向后兼容
+VideoUnderstanding = KimiClient
